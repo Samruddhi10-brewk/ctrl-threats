@@ -1,8 +1,10 @@
 from rest_framework import serializers
 from .models import CustomUser
 
-from rest_framework import serializers
-from .models import CustomUser
+
+# =========================
+# USER SERIALIZERS
+# =========================
 
 class CustomUserSerializer(serializers.ModelSerializer):
     profile_image = serializers.ImageField(required=False)
@@ -37,6 +39,7 @@ class CustomUserSerializer(serializers.ModelSerializer):
 
         return data
 
+
 class CustomUserDetailSerializer(serializers.ModelSerializer):
     profile_image = serializers.ImageField(required=False)
 
@@ -68,25 +71,58 @@ class CustomUserDetailSerializer(serializers.ModelSerializer):
         return data
 
 
-
+# =========================
+# AUTH SERIALIZERS (FIXED)
+# =========================
 
 class SignupSerializer(serializers.Serializer):
     email = serializers.EmailField()
+    username = serializers.CharField()
     password = serializers.CharField(write_only=True)
     confirm_password = serializers.CharField(write_only=True)
-    username = serializers.CharField()
+
+    def validate(self, data):
+        # 🔥 Check password match
+        if data['password'] != data['confirm_password']:
+            raise serializers.ValidationError("Passwords do not match")
+
+        # 🔥 Check if user already exists
+        if CustomUser.objects.filter(email=data['email']).exists():
+            raise serializers.ValidationError("Email already registered")
+
+        return data
+
+    def create(self, validated_data):
+        # 🔥 Remove confirm_password
+        validated_data.pop('confirm_password', None)
+        password = validated_data.pop('password')
+
+        user = CustomUser(
+        email=validated_data['email'],
+        username=validated_data['username']
+    )
+        user.set_password(password)  # 🔥 IMPORTANT
+        user.save()
+
+        return user
+
 
 class LoginSerializer(serializers.Serializer):
-    firebase_token = serializers.CharField()
-    recaptcha_token = serializers.CharField(required=False)  # Assuming this is only needed for some cases
+    email = serializers.EmailField()
+    password = serializers.CharField()
+    firebase_token = serializers.CharField(required=False) 
+    recaptcha_token = serializers.CharField(required=False)
     isOAuth = serializers.BooleanField(default=False)
+
 
 class ForgotPasswordSerializer(serializers.Serializer):
     email = serializers.EmailField()
 
+
 class ResetPasswordSerializer(serializers.Serializer):
     oob_code = serializers.CharField()
     new_password = serializers.CharField(write_only=True)
+
 
 class LoginResponseSerializer(serializers.Serializer):
     refresh = serializers.CharField()

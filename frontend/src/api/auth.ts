@@ -5,19 +5,12 @@ import {getRefreshToken, setAccessToken, setRefreshToken} from '../utils/LocalSt
 import { ApiError } from '../types/errors';
 
 
-export const loginUser = async ({credentials}: {credentials: string}) => {
-    try {
-        const response = await axios.post(`${AUTH_APIS.LOGIN}`, {"firebase_token": credentials, isOAuth: false});
-        setRefreshToken(response.data.refresh)
-        setAccessToken(response.data.access)
-        return response.data;
-    } catch (error: unknown) {
-        if (error instanceof AxiosError) {
-            throw new Error(error.response?.data?.message || 'Error logging in');
-        } else {
-            throw new Error(`${error}`);
-        }
-    }
+export const loginUser = async ({ credentials }: { credentials: string }) => {
+  const response = await axios.post("/login/", {
+    firebase_token: credentials,
+  });
+
+  return response.data;
 };
 
 export const OAuthAPI = async (credentials: string) => {

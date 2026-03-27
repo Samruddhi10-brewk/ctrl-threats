@@ -36,10 +36,10 @@ services:
     environment:
       # Database
       DATABASE_ENGINE: django.db.backends.postgresql
-      DATABASE_NAME: ctrlthreat
+      DATABASE_NAME: mydb
       DATABASE_USER: postgres
       DATABASE_PASSWORD: ${DATABASE_PASSWORD}
-      DATABASE_HOST: ctrlthreat-db
+      DATABASE_HOST: localhost
       DATABASE_PORT: 5432
       
       # Django Settings

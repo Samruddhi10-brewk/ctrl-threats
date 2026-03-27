@@ -1,8 +1,9 @@
 import {
+  getAuth,
   GoogleAuthProvider,
   signInWithPopup,
 } from "firebase/auth";
-import { auth } from "../../firebase";
+import { app } from "../../firebase";
 import { FcGoogle } from "react-icons/fc";
 import toast from "react-hot-toast";
 import {
@@ -29,33 +30,38 @@ const OAuthAPI = async (credentials: string) => {
     setAccessToken(response.data.access);
 
     return response.data;
-  } catch (error) {
+  } catch (error: unknown) {
     if (error instanceof AxiosError) {
-      throw new Error(error.response?.data?.message || "Error logging in");
+      throw new Error(error.response?.data?.message || "Login failed");
     }
-    throw error;
+    throw new Error("Something went wrong");
   }
 };
 
 function OAuth() {
+  const provider = new GoogleAuthProvider();
+  const auth = getAuth(app);
   const router = useNavigate();
   const dispatch = useAppDispatch();
 
-  const handleGoogleSignIn = async () => {
-    
-    try {
-      const provider = new GoogleAuthProvider();
+  const handleGoogleSignIn = async (
+    e: React.MouseEvent<HTMLButtonElement>
+  ) => {
+    e.preventDefault();
 
+    try {
+      // 🔥 Firebase popup login
       const result = await signInWithPopup(auth, provider);
 
       const user = result.user;
+
+      // 🔥 Get Firebase token
       const idToken = await user.getIdToken();
-      
 
+      // 🔥 Send token to backend
       const data = await OAuthAPI(idToken);
-      
 
-
+      // 🔥 Store user info
       setEmail(data.email);
       setUsername(data.username);
 
@@ -63,15 +69,33 @@ function OAuth() {
         loginSuccess({
           email: user.email,
           name: user.displayName,
-          accessToken: data.access, // ✅ FIXED
+          accessToken: idToken,
         })
       );
-      
+
       toast.success("Google Login Successful");
       router("/");
-    } catch (error) {
+    } catch (error: any) {
       console.error("Google Login Error:", error);
-      toast.error("Login failed");
+
+      // 🔥 Firebase specific errors
+      if (error.code) {
+        switch (error.code) {
+          case "auth/popup-closed-by-user":
+            toast.error("Login cancelled");
+            break;
+          case "auth/network-request-failed":
+            toast.error("Network error");
+            break;
+          case "auth/unauthorized-domain":
+            toast.error("Domain not authorized");
+            break;
+          default:
+            toast.error(error.message);
+        }
+      } else {
+        toast.error(error.message || "Google login failed");
+      }
     }
   };
 
