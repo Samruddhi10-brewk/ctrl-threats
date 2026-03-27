@@ -1,0 +1,4 @@
+export const traceroute = {
+    "domain": "google.com",
+    "traceroute": "Trace Route\nto\nTook byte ms\n↓\n172.17.0.1\nTook 0.004 ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\n↓\n*\nTook * ms\nRound trip completed."
+}

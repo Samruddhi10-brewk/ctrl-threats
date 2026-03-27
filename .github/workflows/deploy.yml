@@ -1,0 +1,324 @@
+name: Deploy CtrlThreats to AWS EC2
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # ============ STAGE 1: BUILD & PUSH DOCKER IMAGES ============
+  build-and-push:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set lowercase repository name
+        run: echo "IMAGE_PREFIX=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build Django
+      - name: Build and push Django image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./django/backend
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/django:latest,${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/django:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Build Flask Scan
+      - name: Build and push Flask Scan image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/flask-scan:latest,${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/flask-scan:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Build Phishing Email
+      - name: Build and push Phishing Email image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./PhishingEmail
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/phishing-email:latest,${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/phishing-email:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Build Frontend
+      - name: Build and push Frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/frontend:latest,${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/frontend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VITE_API_URL=${{ secrets.VITE_API_URL }}
+            WEBCHECK_API_URL=${{ secrets.WEBCHECK_API_URL }}
+
+  # ============ STAGE 2: SECURITY SCANNING ============
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+
+  # ============ STAGE 3: DEPLOY TO EC2 ============
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: [build-and-push, security-scan]
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      url: https://ctrlthreats.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Deploy to EC2
+        run: |
+          ssh -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} << 'EOF'
+          set -euo pipefail
+          
+          WORKSPACE_DIR="/home/ubuntu/ctrlthreats"
+          BACKUP_DIR="/home/ubuntu/backups"
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          
+          echo "=== CtrlThreats Deployment Started ==="
+          
+          # Step 1: Backup
+          echo "[1/7] Creating backup..."
+          mkdir -p "$BACKUP_DIR"
+          if [ -f "$WORKSPACE_DIR/docker-compose.yml" ]; then
+            cp "$WORKSPACE_DIR/docker-compose.yml" "$BACKUP_DIR/docker-compose_$TIMESTAMP.yml"
+          fi
+          
+          # Step 2: Clone/Pull Repository
+          echo "[2/7] Updating repository..."
+          if [ ! -d "$WORKSPACE_DIR/.git" ]; then
+            mkdir -p "$WORKSPACE_DIR"
+            cd "$WORKSPACE_DIR"
+            git init
+            git remote add origin https://github.com/${{ github.repository }}.git
+          else
+            cd "$WORKSPACE_DIR"
+          fi
+          
+          git fetch origin main 2>/dev/null || true
+          git checkout main 2>/dev/null || true
+          git reset --hard origin/main 2>/dev/null || true
+          
+          # Step 3: Setup Environment
+          echo "[3/7] Setting up environment..."
+          cat > .env.production << 'ENVFILE'
+          # Django Settings
+          DJANGO_SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
+          DJANGO_DEBUG=False
+          DJANGO_ALLOWED_HOSTS=${{ secrets.DJANGO_ALLOWED_HOSTS }}
+          SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
+          
+          # Firebase credentials
+          FIREBASECONFIG='${{ secrets.FIREBASECONFIG }}'
+
+          VITE_API_URL=${{ secrets.VITE_API_URL }}
+
+          # FLASK API URLs (Internal Docker network - NOT public domain)
+          WEBCHECK_API_URL=http://web_scan_flaskapp:8001/
+
+          EMAIL_API_URL=http://email_phising_flaskapp:5000/validate
+
+          DJANGO_ALLOWED_HOSTS=${{ secrets.DJANGO_ALLOWED_HOSTS }}
+
+          # REDIS API URL
+          REDIS_API_URL=${{ secrets.REDIS_API_URL }}
+
+          # Database configuration
+          DATABASE_ENGINE=django.db.backends.postgresql
+          DATABASE_NAME=ctrlthreat
+          DATABASE_USER=postgres
+          DATABASE_PASSWORD=${{ secrets.DATABASE_PASSWORD }}
+          DATABASE_HOST=ctrlthreat-db
+          DATABASE_PORT=5432
+
+          # AWS configuration
+          AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_STORAGE_BUCKET_NAME=${{ secrets.AWS_STORAGE_BUCKET_NAME }}
+          AWS_S3_SIGNATURE_NAME=s3v4
+          AWS_S3_REGION_NAME=${{ secrets.AWS_S3_REGION_NAME }}
+          AWS_S3_FILE_OVERWRITE=False
+          AWS_DEFAULT_ACL=None
+          AWS_S3_VERIFY=True
+          DEFAULT_FILE_STORAGE=storages.backends.s3boto3.S3Boto3Storage
+
+          # reCAPTCHA
+          reCAPTCHA_SERVER_KEY=${{ secrets.reCAPTCHA_SERVER_KEY }}
+
+          FRESHDESK_API_URL=${{ secrets.FRESHDESK_API_URL }}
+          FRESHDESK_API_KEY=${{ secrets.FRESHDESK_API_KEY }}
+
+          RAZORPAY_KEY_ID=${{ secrets.RAZORPAY_KEY_ID }}
+          RAZORPAY_KEY_SECRET=${{ secrets.RAZORPAY_KEY_SECRET }}
+
+          # Amazon SES configuration
+          AWS_ACCESS_KEY_ID_SES=${{ secrets.AWS_ACCESS_KEY_ID_SES }}
+          AWS_SECRET_ACCESS_KEY_SES=${{ secrets.AWS_SECRET_ACCESS_KEY_SES }}
+          AWS_REGION=${{ secrets.AWS_REGION }}
+          SES_FROM_EMAIL=${{ secrets.SES_FROM_EMAIL }}
+          SES_TO_EMAIL=${{ secrets.SES_TO_EMAIL }}
+          ENVFILE
+          
+          chmod 600 .env.production
+          
+          # Step 4: Login to Container Registry
+          echo "[4/7] Logging in to container registry..."
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+          # Step 4.5: Create required directories
+          echo "[4.5/7] Creating required directories..."
+          mkdir -p /data/postgres_data
+          sudo chown -R 999:999 /data/postgres_data 2>/dev/null || true
+          
+          # Step 5: Pull and Start Containers
+          echo "[5/7] Pulling images and starting containers..."
+          docker compose --env-file .env.production -f docker-compose.yml pull 2>/dev/null || true
+          docker compose --env-file .env.production -f docker-compose.yml down --remove-orphans 2>/dev/null || true
+          docker compose --env-file .env.production -f docker-compose.yml up -d
+          
+          # Wait for database
+          echo "[5.5/7] Waiting for database..."
+          for i in {1..30}; do
+            if docker compose --env-file .env.production -f docker-compose.yml exec -T ctrlthreat-db pg_isready -U postgres > /dev/null 2>&1; then
+              echo "✓ Database ready"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+          
+          # Step 6: Run Migrations
+          echo "[6/7] Running migrations..."
+          echo "Checking Django logs before migrations..."
+          docker compose --env-file .env.production -f docker-compose.yml logs django --tail=50
+          
+          docker compose --env-file .env.production -f docker-compose.yml exec -T django python manage.py migrate --noinput || {
+            echo "Migration failed, checking logs..."
+            docker compose --env-file .env.production -f docker-compose.yml logs
+            exit 1
+          }
+          docker compose --env-file .env.production -f docker-compose.yml exec -T django python manage.py collectstatic --noinput || true
+          
+          # Step 7: Health Check
+          echo "[7/7] Verifying deployment..."
+          sleep 5
+          
+          if docker compose --env-file .env.production -f docker-compose.yml ps | grep -q "Exit"; then
+            echo "❌ Deployment failed - containers exited"
+            docker compose --env-file .env.production -f docker-compose.yml logs
+            exit 1
+          fi
+          
+          echo ""
+          echo "=== ✓ Deployment Successful ==="
+          docker compose --env-file .env.production -f docker-compose.yml ps
+          EOF
+
+      - name: Verify deployment
+        run: |
+          ssh -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} << 'EOF'
+          cd /home/ubuntu/ctrlthreats
+          echo "Container Status:"
+          docker compose --env-file .env.production -f docker-compose.yml ps
+          echo ""
+          echo "Recent Logs:"
+          docker compose --env-file .env.production -f docker-compose.yml logs --tail=20 django 2>/dev/null || true
+          EOF
+
+  # ============ STAGE 4: NOTIFICATIONS ============
+  notify:
+    name: Send Notifications
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    if: always()
+
+    steps:
+      - name: Notify Slack (Success)
+        if: needs.deploy.result == 'success'
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: '✅ CtrlThreats Deployment Successful',
+              attachments: [{
+                color: 'good',
+                text: `Commit: ${{ github.sha }}\nAuthor: ${{ github.actor }}\nURL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`,
+                title: 'Deployment Status'
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        continue-on-error: true
+
+      - name: Notify Slack (Failure)
+        if: needs.deploy.result == 'failure'
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: '❌ CtrlThreats Deployment Failed',
+              attachments: [{
+                color: 'danger',
+                text: `Commit: ${{ github.sha }}\nAuthor: ${{ github.actor }}\nURL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`,
+                title: 'Deployment Status'
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        continue-on-error: true

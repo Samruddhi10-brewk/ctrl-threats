@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+* {
+    font-family: sans-serif;
+}
+
+.fullParent {
+    width: 95vw;
+    display: grid;
+    grid-auto-flow: dense;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 1rem;
+    margin: auto;
+    width: calc(100% - 2rem);
+    padding-bottom: 1rem;
+}
+
+h1 {
+    font-size: clamp(32px, 6vw, 100px);
+}
+
+h2 {
+    font-size: clamp(20px, 5vw, 50px);
+}

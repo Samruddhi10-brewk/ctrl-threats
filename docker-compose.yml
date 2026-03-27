@@ -1,0 +1,216 @@
+services:
+  ctrlthreat-db:
+    container_name: ctrlthreat-db
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: ctrlthreat
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backups:/backups
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  django:
+    build: ./django/backend
+    command: gunicorn backend.wsgi:application --bind 0.0.0.0:8000
+    container_name: django
+    restart: always
+
+    # env_file:
+    # - .env   # 👈 ADD HERE
+
+    environment:
+      # Database
+      DATABASE_ENGINE: django.db.backends.postgresql
+      DATABASE_NAME: ctrlthreat
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+      DATABASE_HOST: ctrlthreat-db
+      DATABASE_PORT: 5432
+      
+      # Django Settings
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DJANGO_DEBUG: "False"
+      ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
+      SECRET_KEY: ${DJANGO_SECRET_KEY}
+      
+      # Firebase
+      FIREBASECONFIG: ${FIREBASECONFIG}
+      
+      # Frontend URLs
+      VITE_API_URL: ${VITE_API_URL}
+      WEBCHECK_API_URL: ${WEBCHECK_API_URL}
+      EMAIL_API_URL: ${EMAIL_API_URL}
+      REDIS_API_URL: ${REDIS_API_URL}
+      
+      # AWS S3
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
+      AWS_STORAGE_BUCKET_NAME: ${AWS_STORAGE_BUCKET_NAME}
+      AWS_S3_REGION_NAME: ${AWS_S3_REGION_NAME}
+      AWS_S3_SIGNATURE_NAME: s3v4
+      AWS_S3_FILE_OVERWRITE: "False"
+      AWS_DEFAULT_ACL: "None"
+      AWS_S3_VERIFY: "True"
+      DEFAULT_FILE_STORAGE: storages.backends.s3boto3.S3Boto3Storage
+      
+      # reCAPTCHA
+      reCAPTCHA_SERVER_KEY: ${reCAPTCHA_SERVER_KEY}
+      
+      # Freshdesk
+      FRESHDESK_API_URL: ${FRESHDESK_API_URL}
+      FRESHDESK_API_KEY: ${FRESHDESK_API_KEY}
+      
+      # Razorpay
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET}
+      
+      # Amazon SES configuration
+      AWS_ACCESS_KEY_ID_SES: ${AWS_ACCESS_KEY_ID_SES}
+      AWS_SECRET_ACCESS_KEY_SES: ${AWS_SECRET_ACCESS_KEY_SES}
+      SES_FROM_EMAIL: ${SES_FROM_EMAIL}
+      SES_TO_EMAIL: ${SES_TO_EMAIL}
+    depends_on:
+      ctrlthreat-db:
+        condition: service_healthy
+    networks:
+      - app-network
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  web_scan_flaskapp:
+    build: ./backend
+    container_name: web_scan_flaskapp
+    restart: always
+    # env_file:
+    # - .env   # 👈 ADD HERE
+
+    environment:
+      ENV_VAR_NAME: value
+    networks:
+      - app-network
+    depends_on:
+      django:
+        condition: service_healthy
+    expose:
+      - "8001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  email_phising_flaskapp:
+    build: ./PhishingEmail
+    container_name: email_phising_flaskapp
+    restart: always
+    # env_file:
+    # - .env   # 👈 ADD HERE
+
+    environment:
+      ENV_VAR_NAME: value
+    networks:
+      - app-network
+    depends_on:
+      django:
+        condition: service_healthy
+    expose:
+      - "5000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  frontend:
+    build: ./frontend
+    container_name: ctrlthreat-frontend
+    restart: always
+
+    # env_file:
+    # - .env   # 👈 ADD HERE
+
+    environment:
+      VITE_API_URL: ${VITE_API_URL}
+      WEBCHECK_API_URL: ${WEBCHECK_API_URL}
+      EMAIL_API_URL: ${EMAIL_API_URL}
+      REDIS_API_URL: ${REDIS_API_URL}
+    networks:
+      - app-network
+    depends_on:
+      django:
+        condition: service_healthy
+    expose:
+      - "3000"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - frontend
+      - django
+      - web_scan_flaskapp
+      - email_phising_flaskapp
+    networks:
+      - app-network
+
+volumes:
+  postgres_data:
+    driver: local
+
+  nginx_logs:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge
